@@ -13,13 +13,13 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v3
 
-      # 2. تثبيت Flutter نسخة ثابتة (مهم جدًا)
+      # 2. تثبيت أحدث Flutter stable (بدون تثبيت رقم قديم)
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.19.0'
+          channel: stable
 
-      # 3. عرض معلومات النظام (للتشخيص)
+      # 3. عرض البيئة (تشخيص)
       - name: Show environment
         run: |
           flutter --version
@@ -31,19 +31,23 @@ jobs:
       - name: Clean project
         run: flutter clean
 
-      # 5. تحميل الحزم
+      # 5. تحديث dependencies بالقوة (مهم جدًا لحل المشكلة)
+      - name: Force pub upgrade
+        run: flutter pub upgrade --major-versions
+
+      # 6. تحميل الحزم
       - name: Install dependencies
         run: flutter pub get
 
-      # 6. فحص أخطاء المشروع (مهم)
+      # 7. تحليل المشروع
       - name: Analyze project
         run: flutter analyze || true
 
-      # 7. بناء APK
+      # 8. بناء APK
       - name: Build APK
         run: flutter build apk --release --verbose
 
-      # 8. رفع الناتج
+      # 9. رفع APK
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
