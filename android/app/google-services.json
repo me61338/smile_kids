@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "455616151383",
+    "project_id": "smile-kids-7005e",
+    "storage_bucket": "smile-kids-7005e.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:455616151383:android:213d5087fa698398df4812",
+        "android_client_info": {
+          "package_name": "com.example.smile_kids"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCMt2AA-0HhIv5LbulGFe1xTX14l-I9mFA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
