@@ -17,6 +17,9 @@ jobs:
         with:
           flutter-version: stable
 
+      - name: Show directory (DEBUG)
+        run: ls -la
+
       - name: Install dependencies
         run: flutter pub get
 
