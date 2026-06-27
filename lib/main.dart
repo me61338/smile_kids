@@ -97,6 +97,7 @@ const List<AppUser> appUsers = [
 ];
 
 class KidSession {
+  final String docId;
   final int id;
   final String childName;
   final int childrenCount;
@@ -110,6 +111,7 @@ class KidSession {
   bool alarmDone;
 
   KidSession({
+    this.docId = '',
     required this.id,
     required this.childName,
     required this.childrenCount,
@@ -154,6 +156,27 @@ String formatDuration(Duration duration) {
   final seconds = (duration.inSeconds % 60).toString().padLeft(2, '0');
   return '$minutes:$seconds';
 }
+
+
+int dailyDisplayNumber(KidSession session) {
+  final day = DateTime(session.startTime.year, session.startTime.month, session.startTime.day);
+
+  final sameDaySessions = allSessions.where((s) {
+    final sDay = DateTime(s.startTime.year, s.startTime.month, s.startTime.day);
+    return sDay == day;
+  }).toList()
+    ..sort((a, b) => a.startTime.compareTo(b.startTime));
+
+  final index = sameDaySessions.indexWhere((s) {
+    if (session.docId.isNotEmpty && s.docId.isNotEmpty) {
+      return s.docId == session.docId;
+    }
+    return s.id == session.id && s.startTime == session.startTime;
+  });
+
+  return index >= 0 ? index + 1 : 1;
+}
+
 
 /* =========================
    LOGIN PAGE
@@ -254,8 +277,6 @@ class LoginUsersPage extends StatelessWidget {
                   ],
                 ),
                 actions: [
-          IconButton(icon: const Icon(Icons.filter_alt), onPressed: toggleFilter),
-          IconButton(icon: const Icon(Icons.logout), onPressed: logout),
                   TextButton(
                     onPressed: () => Navigator.pop(dialogContext),
                     child: const Text(
@@ -464,38 +485,40 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  // ===== ADDED FEATURES (SAFE PATCH) =====
+
+  int get todayOrderNumber {
+    final now = DateTime.now();
+    final todayStart = DateTime(now.year, now.month, now.day);
+
+    return allSessions.where((s) {
+      final sessionDay = DateTime(s.startTime.year, s.startTime.month, s.startTime.day);
+      return sessionDay == todayStart;
+    }).length + 1;
+  }
+
+  Timer? timer;
+  bool alarmDialogOpen = false;
   bool showLast3Days = false;
-  String? lastPlayedSessionId;
-
-  void logout() {
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(
-        builder: (_) => const LoginUsersPage(),
-      ),
-    );
-  }
-
-  void toggleFilter() {
-    setState(() {
-      showLast3Days = !showLast3Days;
-    });
-  }
-
-  void playAlertOnce(String id) {
-    if (lastPlayedSessionId == id) return;
-    lastPlayedSessionId = id;
-    SystemSound.play(SystemSoundType.alert);
-    HapticFeedback.heavyImpact();
-  }
 
   bool isLast3Days(DateTime date) {
     return date.isAfter(DateTime.now().subtract(const Duration(days: 3)));
   }
 
-  Timer? timer;
-  bool alarmDialogOpen = false;
+  void toggleLast3DaysFilter() {
+    setState(() {
+      showLast3Days = !showLast3Days;
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          showLast3Days
+              ? 'تم تشغيل فلتر آخر 3 أيام'
+              : 'تم إلغاء فلتر آخر 3 أيام',
+        ),
+      ),
+    );
+  }
 
   @override
   void initState() {
@@ -515,6 +538,7 @@ class _HomePageState extends State<HomePage> {
         final data = doc.data();
 
         allSessions.add(KidSession(
+          docId: doc.id,
           id: data['id'] ?? 0,
           childName: data['childName'] ?? '',
           childrenCount: data['childrenCount'] ?? 1,
@@ -539,13 +563,11 @@ class _HomePageState extends State<HomePage> {
   }
 
   int get activeChildren {
-    return allSessions
-        .where((session) => !session.ended)
-        .fold(0, (sum, session) => sum + session.childrenCount);
+    return activeSessions.fold(0, (sum, session) => sum + session.childrenCount);
   }
 
   int get activeGroups {
-    return allSessions.where((session) => !session.ended).length;
+    return activeSessions.length;
   }
 
   int get totalMoney {
@@ -553,7 +575,11 @@ class _HomePageState extends State<HomePage> {
   }
 
   List<KidSession> get activeSessions {
-    return allSessions.where((session) => !session.ended).toList();
+    return allSessions.where((session) {
+      if (session.ended) return false;
+      if (!showLast3Days) return true;
+      return isLast3Days(session.startTime);
+    }).toList();
   }
 
   List<KidSession> get historySessions {
@@ -623,16 +649,28 @@ class _HomePageState extends State<HomePage> {
               ),
             ),
             actions: [
-          IconButton(icon: const Icon(Icons.filter_alt), onPressed: toggleFilter),
-          IconButton(icon: const Icon(Icons.logout), onPressed: logout),
               OutlinedButton(
                 onPressed: () {
+                  final newEndTime =
+                      session.endTime.add(const Duration(minutes: 15));
+                  final addedMoney = 20 * session.childrenCount;
+
                   setState(() {
-                    session.endTime =
-                        session.endTime.add(const Duration(minutes: 30));
-                    session.totalMoney += 30 * session.childrenCount;
+                    session.endTime = newEndTime;
+                    session.totalMoney += addedMoney;
                     session.alarmDone = false;
                   });
+
+                  if (session.docId.isNotEmpty) {
+                    FirebaseFirestore.instance
+                        .collection('sessions')
+                        .doc(session.docId)
+                        .update({
+                      'endTime': newEndTime.toIso8601String(),
+                      'totalMoney': session.totalMoney,
+                      'ended': false,
+                    });
+                  }
 
                   Navigator.pop(dialogContext);
                 },
@@ -640,13 +678,20 @@ class _HomePageState extends State<HomePage> {
                   foregroundColor: Colors.white,
                   side: const BorderSide(color: AppColor.border),
                 ),
-                child: const Text('زيادة 30 دقيقة'),
+                child: const Text('زيادة 15 دقيقة'),
               ),
               ElevatedButton(
                 onPressed: () {
                   setState(() {
                     session.ended = true;
                   });
+
+                  if (session.docId.isNotEmpty) {
+                    FirebaseFirestore.instance
+                        .collection('sessions')
+                        .doc(session.docId)
+                        .update({'ended': true});
+                  }
 
                   Navigator.pop(dialogContext);
                 },
@@ -777,7 +822,7 @@ class _HomePageState extends State<HomePage> {
           textDirection: TextDirection.rtl,
           child: RegisterDialog(
             user: widget.user,
-            orderNumber: allSessions.length + 1,
+            orderNumber: todayOrderNumber,
             onSave: (session) {
               setState(() {
                 allSessions.add(session);
@@ -793,18 +838,39 @@ class _HomePageState extends State<HomePage> {
     setState(() {
       session.ended = true;
     });
+
+    if (session.docId.isNotEmpty) {
+      FirebaseFirestore.instance
+          .collection('sessions')
+          .doc(session.docId)
+          .update({'ended': true});
+    }
   }
 
   void addTime(KidSession session) {
+    final newEndTime = session.endTime.add(const Duration(minutes: 15));
+    final addedMoney = 20 * session.childrenCount;
+
     setState(() {
-      session.endTime = session.endTime.add(const Duration(minutes: 30));
-      session.totalMoney += 30 * session.childrenCount;
+      session.endTime = newEndTime;
+      session.totalMoney += addedMoney;
       session.alarmDone = false;
     });
 
+    if (session.docId.isNotEmpty) {
+      FirebaseFirestore.instance
+          .collection('sessions')
+          .doc(session.docId)
+          .update({
+        'endTime': newEndTime.toIso8601String(),
+        'totalMoney': session.totalMoney,
+        'ended': false,
+      });
+    }
+
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('تمت إضافة 30 دقيقة لـ ${session.childName}'),
+        content: Text('تمت إضافة 15 دقيقة لـ ${session.childName}'),
       ),
     );
   }
@@ -837,6 +903,8 @@ class _HomePageState extends State<HomePage> {
                 onBack: goBackToUsers,
                 onRefresh: refreshPage,
                 onHistory: openHistory,
+                onFilter: toggleLast3DaysFilter,
+                filterActive: showLast3Days,
               ),
               Expanded(
                 child: SingleChildScrollView(
@@ -896,6 +964,8 @@ class TopBar extends StatelessWidget {
   final VoidCallback onBack;
   final VoidCallback onRefresh;
   final VoidCallback onHistory;
+  final VoidCallback onFilter;
+  final bool filterActive;
 
   const TopBar({
     super.key,
@@ -906,6 +976,8 @@ class TopBar extends StatelessWidget {
     required this.onBack,
     required this.onRefresh,
     required this.onHistory,
+    required this.onFilter,
+    required this.filterActive,
   });
 
   @override
@@ -922,6 +994,18 @@ class TopBar extends StatelessWidget {
       child: Row(
         children: [
           SmallLiveChip(value: '$activeGroups'),
+          const SizedBox(width: 8),
+          TopCircleButton(
+            icon: Icons.logout_rounded,
+            onTap: onBack,
+          ),
+          const SizedBox(width: 8),
+          TopCircleButton(
+            icon: filterActive
+                ? Icons.filter_alt_rounded
+                : Icons.filter_alt_off_rounded,
+            onTap: onFilter,
+          ),
           const SizedBox(width: 8),
           TopCircleButton(
             icon: Icons.history_rounded,
@@ -1255,6 +1339,9 @@ class ActiveSessionCard extends StatelessWidget {
     final remainingText = formatDuration(session.remaining);
     final progress = session.progress;
     final expired = session.isExpired;
+    final warning = !expired &&
+        !session.ended &&
+        session.remaining.inMinutes <= 5;
 
     return Container(
       width: double.infinity,
@@ -1264,7 +1351,11 @@ class ActiveSessionCard extends StatelessWidget {
         color: AppColor.card.withOpacity(0.96),
         borderRadius: BorderRadius.circular(28),
         border: Border.all(
-          color: expired ? AppColor.red : AppColor.gold.withOpacity(0.55),
+          color: expired
+              ? AppColor.red
+              : warning
+                  ? AppColor.red
+                  : AppColor.gold.withOpacity(0.55),
           width: 1.3,
         ),
         boxShadow: [
@@ -1283,7 +1374,7 @@ class ActiveSessionCard extends StatelessWidget {
                 width: 58,
                 height: 58,
                 decoration: BoxDecoration(
-                  color: expired ? AppColor.red : AppColor.gold,
+                  color: expired || warning ? AppColor.red : AppColor.gold,
                   shape: BoxShape.circle,
                 ),
                 alignment: Alignment.center,
@@ -1299,7 +1390,7 @@ class ActiveSessionCard extends StatelessWidget {
                       ),
                     ),
                     Text(
-                      '${session.id}',
+                      '${dailyDisplayNumber(session)}',
                       style: const TextStyle(
                         color: Colors.black,
                         fontSize: 22,
@@ -1353,7 +1444,7 @@ class ActiveSessionCard extends StatelessWidget {
                   Text(
                     remainingText,
                     style: TextStyle(
-                      color: expired ? AppColor.red : AppColor.gold,
+                      color: expired || warning ? AppColor.red : AppColor.gold,
                       fontSize: 25,
                       height: 1,
                       fontWeight: FontWeight.w900,
@@ -1361,9 +1452,13 @@ class ActiveSessionCard extends StatelessWidget {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    expired ? 'انتهى' : 'متبقي',
+                    expired
+                        ? 'انتهى'
+                        : warning
+                            ? 'آخر 5 دقائق'
+                            : 'متبقي',
                     style: TextStyle(
-                      color: expired ? AppColor.red : AppColor.gold,
+                      color: expired || warning ? AppColor.red : AppColor.gold,
                       fontSize: 11,
                       fontWeight: FontWeight.w800,
                     ),
@@ -1416,8 +1511,8 @@ class ActiveSessionCard extends StatelessWidget {
               const SizedBox(width: 10),
               Expanded(
                 child: GreenActionButton(
-                  text: 'إنهاء',
-                  icon: Icons.check_circle_outline_rounded,
+                  text: 'خروج',
+                  icon: Icons.exit_to_app_rounded,
                   onTap: onEnd,
                 ),
               ),
@@ -1610,6 +1705,8 @@ class RegisterDialog extends StatefulWidget {
 class _RegisterDialogState extends State<RegisterDialog> {
   final nameController = TextEditingController();
   final noteController = TextEditingController();
+  final minutesController = TextEditingController(text: '60');
+  final priceController = TextEditingController(text: '60');
 
   int childrenCount = 1;
   int minutes = 60;
@@ -1617,10 +1714,16 @@ class _RegisterDialogState extends State<RegisterDialog> {
 
   int get totalMoney => childrenCount * pricePerChild;
 
-  void chooseHour() {
+  void syncManualInputs() {
+    minutesController.text = minutes.toString();
+    priceController.text = pricePerChild.toString();
+  }
+
+  void chooseQuarterHour() {
     setState(() {
-      minutes = 60;
-      pricePerChild = 60;
+      minutes = 15;
+      pricePerChild = 20;
+      syncManualInputs();
     });
   }
 
@@ -1628,7 +1731,25 @@ class _RegisterDialogState extends State<RegisterDialog> {
     setState(() {
       minutes = 30;
       pricePerChild = 30;
+      syncManualInputs();
     });
+  }
+
+  void chooseHour() {
+    setState(() {
+      minutes = 60;
+      pricePerChild = 60;
+      syncManualInputs();
+    });
+  }
+
+  @override
+  void dispose() {
+    nameController.dispose();
+    noteController.dispose();
+    minutesController.dispose();
+    priceController.dispose();
+    super.dispose();
   }
 
   void saveSession() {
@@ -1839,23 +1960,109 @@ class _RegisterDialogState extends State<RegisterDialog> {
                   ),
                 ),
                 const SizedBox(height: 9),
-                Row(
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
                   children: [
-                    Expanded(
+                    SizedBox(
+                      width: 135,
+                      child: PlanCard(
+                        title: 'ربع ساعة',
+                        subtitle: '15د - 20ج',
+                        selected: minutes == 15 && pricePerChild == 20,
+                        onTap: chooseQuarterHour,
+                      ),
+                    ),
+                    SizedBox(
+                      width: 135,
                       child: PlanCard(
                         title: 'نص ساعة',
                         subtitle: '30د - 30ج',
-                        selected: minutes == 30,
+                        selected: minutes == 30 && pricePerChild == 30,
                         onTap: chooseHalfHour,
+                      ),
+                    ),
+                    SizedBox(
+                      width: 135,
+                      child: PlanCard(
+                        title: 'ساعة',
+                        subtitle: '60د - 60ج',
+                        selected: minutes == 60 && pricePerChild == 60,
+                        onTap: chooseHour,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                const Align(
+                  alignment: Alignment.centerRight,
+                  child: Text(
+                    'تعديل يدوي',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w900,
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 9),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: minutesController,
+                        keyboardType: TextInputType.number,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.white),
+                        decoration: InputDecoration(
+                          hintText: 'الدقائق',
+                          hintStyle: const TextStyle(color: AppColor.muted),
+                          filled: true,
+                          fillColor: AppColor.bg,
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: BorderSide(color: AppColor.gold.withOpacity(0.45)),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: const BorderSide(color: AppColor.gold, width: 1.4),
+                          ),
+                        ),
+                        onChanged: (value) {
+                          setState(() {
+                            minutes = int.tryParse(value.trim()) ?? 15;
+                          });
+                        },
                       ),
                     ),
                     const SizedBox(width: 10),
                     Expanded(
-                      child: PlanCard(
-                        title: 'ساعة',
-                        subtitle: '60د - 60ج',
-                        selected: minutes == 60,
-                        onTap: chooseHour,
+                      child: TextField(
+                        controller: priceController,
+                        keyboardType: TextInputType.number,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.white),
+                        decoration: InputDecoration(
+                          hintText: 'السعر للطفل',
+                          hintStyle: const TextStyle(color: AppColor.muted),
+                          filled: true,
+                          fillColor: AppColor.bg,
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: BorderSide(color: AppColor.gold.withOpacity(0.45)),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: const BorderSide(color: AppColor.gold, width: 1.4),
+                          ),
+                        ),
+                        onChanged: (value) {
+                          setState(() {
+                            pricePerChild = int.tryParse(value.trim()) ?? 0;
+                          });
+                        },
                       ),
                     ),
                   ],
